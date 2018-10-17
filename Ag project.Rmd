@@ -24,3 +24,28 @@ quantities = read.dta13("Data/global_quantities.dta")
 prices     = read.dta13("Data/global_prices.dta")
 calorie    = read.dta13("Data/caloric_panel.dta")
 ```
+
+```{r replicate STATA code}
+workdata = merge(quantities,prices,by.x = "year",by.y = "year",all = T)
+
+#calorie weights 
+kappa_maize=2204.622*(862/1316)*1690/(2000*365.25)
+kappa_rice=2204.622*(1288/2178)*1590/(2000*365.25) 
+kappa_soybeans=2204.622*(908/966)*1590/(2000*365.25)
+kappa_wheat=2204.622*(489/798)*1615/(2000*365.25)
+
+#generate future prices
+workdata = workdata %>% mutate(fut_price = (kappa_maize*C_fut_price +kappa_soybeans*S_fut_price + kappa_wheat*W_fut_price)/(kappa_maize+kappa_soybeans+kappa_wheat)
+)
+
+#generate variables to be used in regressions
+workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
+
+
+```
+
+
+
+
+
+
