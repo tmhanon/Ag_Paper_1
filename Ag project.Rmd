@@ -13,6 +13,14 @@ library(stargazer)
 library(broom)
 library(ggplot2)
 library(mfx)
-options(scipen=50)
 ```
 
+```{r reading data}
+CPI    = read.table("Data/CPI.csv",sep = ",",header = T)
+area   = read.table("Data/FAOSTAT_data_2017.csv",sep = ",",header = T)
+stock  = read.table("Data/FAOSTAT_stocks_data_2017.csv",sep = ",",header = T)
+hemisphere = read.dta13("Data/hemisphere.dta")
+quantities = read.dta13("Data/global_quantities.dta")
+prices     = read.dta13("Data/global_prices.dta")
+calorie    = read.dta13("Data/caloric_panel.dta")
+```
