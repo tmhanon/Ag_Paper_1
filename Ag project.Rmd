@@ -13,6 +13,10 @@ library(stargazer)
 library(broom)
 library(ggplot2)
 library(Hmisc)
+library(rms)
+library(sandwich)
+library(lmtest)
+library(AER)
 ```
 
 ```{r reading data}
@@ -35,8 +39,8 @@ kappa_soybeans=2204.622*(908/966)*1590/(2000*365.25)
 kappa_wheat=2204.622*(489/798)*1615/(2000*365.25)
 
 #generate future prices
-workdata = workdata %>% mutate(fut_price = (kappa_maize*C_fut_price +kappa_soybeans*S_fut_price + kappa_wheat*W_fut_price)/(kappa_maize+kappa_soybeans+kappa_wheat)
-)
+workdata = workdata %>% 
+  mutate(fut_price = (kappa_maize*C_fut_price + kappa_soybeans*S_fut_price + kappa_wheat*W_fut_price)/(kappa_maize+kappa_soybeans+kappa_wheat))
 
 #generate variables to be used in regressions
 workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
@@ -44,6 +48,19 @@ workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(c
 #
 
 ```
+
+```{r try some regressions}
+# Replicate Aaron's Regressions:
+aaron_reg_1 <- lm(ln_q ~ ln_p + rcs(year, 4), data = workdata)
+coeftest(aaron_reg_1, vcov = NeweyWest(aaron_reg_1, lag = 1))
+
+aaron_reg_2 <- lm(ln_q ~ ln_p + ln_w + rcs(year, 4), data = workdata)
+coeftest(aaron_reg_2, vcov = NeweyWest(aaron_reg_2, lag = 1))
+
+aaron_reg_3 <- ivreg(ln_q ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), data = workdata)
+coeftest(aaron_reg_3, vcov = NeweyWest(aaron_reg_3, lag = 1))
+```
+
 
 
 
