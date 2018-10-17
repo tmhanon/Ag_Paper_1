@@ -1,0 +1,18 @@
+---
+title: "Supply Estimation"
+author: "Tristan Hanon & Shanchao Wang"
+date: "10/16/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE,message=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(readstata13)
+library(tidyverse)
+library(stargazer)
+library(broom)
+library(ggplot2)
+library(mfx)
+options(scipen=50)
+```
+
