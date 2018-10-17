@@ -12,7 +12,7 @@ library(tidyverse)
 library(stargazer)
 library(broom)
 library(ggplot2)
-library(mfx)
+library(Hmisc)
 ```
 
 ```{r reading data}
@@ -41,7 +41,6 @@ workdata = workdata %>% mutate(fut_price = (kappa_maize*C_fut_price +kappa_soybe
 #generate variables to be used in regressions
 workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
 
-##asdf
 
 ```
 
