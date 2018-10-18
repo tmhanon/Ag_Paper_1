@@ -8,6 +8,7 @@ output: pdf_document
 ```{r setup, include=FALSE,message=FALSE,warning=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 library(readstata13)
+library(plyr)
 library(tidyverse)
 library(stargazer)
 library(broom)
@@ -21,7 +22,7 @@ library(AER)
 
 ```{r reading data}
 CPI    = read.table("Data/CPI.csv",sep = ",",header = T)
-area   = read.table("Data/FAOSTAT_data_2017.csv",sep = ",",header = T)
+area <- read.csv("Data/FAOSTAT_data_2017.csv")
 stock  = read.table("Data/FAOSTAT_stocks_data_2017.csv",sep = ",",header = T)
 hemisphere = read.dta13("Data/hemisphere.dta")
 quantities = read.dta13("Data/global_quantities.dta")
@@ -45,8 +46,6 @@ workdata = workdata %>%
 #generate variables to be used in regressions
 workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
 
-#
-
 ```
 
 ```{r try some regressions}
@@ -59,6 +58,50 @@ coeftest(aaron_reg_2, vcov = NeweyWest(aaron_reg_2, lag = 1))
 
 aaron_reg_3 <- ivreg(ln_q ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), data = workdata)
 coeftest(aaron_reg_3, vcov = NeweyWest(aaron_reg_3, lag = 1))
+```
+
+```{r do quantities again}
+# Clean Up the Data
+area$Element <- revalue(area$Element, c("Area harvested" = "area",
+                                        "Production" = "prod",
+                                        "Yield" = "yield"))
+area$Item <- revalue(area$Item, c("Maize" = "maize",
+                                  "Rice, paddy" = "rice",
+                                  "Soybeans" = "soybeans",
+                                  "Wheat" = "wheat"))
+names(area)[names(area) == "Area.Code"] <- "country"
+names(area)[names(area) == "Area"] <- "country_str"
+names(area)[names(area) == "Value"] <- "value"
+names(area)[names(area) == "Year"] <- "year"
+area$item_element <- paste(area$Item, area$Element, sep = "_")
+
+# Subset to variables of interest:
+quant_data <- area %>%
+  select("year", "country", "country_str", "item_element", "value")
+quant_data <- quant_data %>%
+  spread(key = item_element, value = value)
+```
+
+
+```{r try some new regressions}
+# Generate New Dependent and Independent Variables
+ind_crop_data <- workdata %>%
+  mutate(ln_corn_area = log(maize_area),
+         ln_corn_prod = log(maize_prod),
+         ln_corn_price = log(lag(C_fut_price) / lag(cpi)),
+         ln_wheat_area = log(wheat_area),
+         ln_wheat_prod = log(wheat_prod),
+         ln_wheat_price = log(lag(W_fut_price) / lag(cpi)),
+         ln_rice_area = log(rice_area),
+         ln_rice_prod = log(rice_prod),
+         ln_rice_price = log(lag(RR_fut_price) / lag(cpi)),
+         ln_soy_area = log(soybeans_area),
+         ln_soy_prod = log(soybeans_prod),
+         ln_soy_price = log(lag(S_fut_price) / lag(cpi))
+         )
+
+# Run Individual Crop Regressions:
+
 ```
 
 
