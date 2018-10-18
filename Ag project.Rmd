@@ -5,14 +5,17 @@ date: "10/16/2018"
 output: pdf_document
 ---
 
-```{r setup, include=FALSE,message=FALSE,warning=FALSE}
-knitr::opts_chunk$set(echo = FALSE)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = F,warning = F)
 library(readstata13)
 library(tidyverse)
 library(stargazer)
 library(broom)
 library(ggplot2)
-library(Hmisc)
+library(sandwich)
+library(rms)
+library(lmtest)
+library(AER)
 ```
 
 ```{r reading data}
@@ -25,7 +28,7 @@ prices     = read.dta13("Data/global_prices.dta")
 calorie    = read.dta13("Data/caloric_panel.dta")
 ```
 
-```{r replicate STATA code}
+```{r replicate STATA code,results='asis',warning=F}
 workdata = merge(quantities,prices,by.x = "year",by.y = "year",all = T)
 
 #calorie weights 
@@ -41,8 +44,18 @@ workdata = workdata %>% mutate(fut_price = (kappa_maize*C_fut_price +kappa_soybe
 #generate variables to be used in regressions
 workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
 
+#regressions
+reg1 = lm(ln_q ~ ln_p + rcs(year,4),data = workdata)
+res1 = coeftest(reg1,vcov. = NeweyWest(reg1))
 
+reg2 = lm(ln_q ~ ln_p + ln_w + rcs(year,4),data = workdata)
+res2 = coeftest(reg2,vcov. = NeweyWest(reg2))
+
+reg3 = ivreg(ln_q ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
+res3 = coeftest(reg3,vcov. = NeweyWest(reg3))
+stargazer(res1,res2,res3,header = F)
 ```
+
 
 
 
