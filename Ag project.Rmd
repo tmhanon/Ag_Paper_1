@@ -8,12 +8,13 @@ output: pdf_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE,message = F,warning = F)
 library(readstata13)
+library(plyr)
 library(tidyverse)
 library(stargazer)
 library(broom)
 library(ggplot2)
-library(sandwich)
 library(rms)
+library(sandwich)
 library(lmtest)
 library(AER)
 ```
@@ -28,7 +29,7 @@ prices     = read.dta13("Data/global_prices.dta")
 calorie    = read.dta13("Data/caloric_panel.dta")
 ```
 
-```{r replicate STATA code,results='asis',warning=F}
+```{r replicate STATA code,warning=F}
 workdata = merge(quantities,prices,by.x = "year",by.y = "year",all = T)
 
 #calorie weights 
@@ -45,18 +46,52 @@ workdata = workdata %>% mutate(fut_price = (kappa_maize*C_fut_price +kappa_soybe
 workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
 
 #regressions
-reg1 = lm(ln_q ~ ln_p + rcs(year,4),data = workdata)
-res1 = coeftest(reg1,vcov. = NeweyWest(reg1))
+aaron1 = lm(ln_q ~ ln_p + rcs(year,4),data = workdata)
+aaronres1 = coeftest(aaron1,vcov. = NeweyWest(aaron1))
 
-reg2 = lm(ln_q ~ ln_p + ln_w + rcs(year,4),data = workdata)
-res2 = coeftest(reg2,vcov. = NeweyWest(reg2))
+aaron2 = lm(ln_q ~ ln_p + ln_w + rcs(year,4),data = workdata)
+aaronres2 = coeftest(aaron2,vcov. = NeweyWest(aaron2))
 
-reg3 = ivreg(ln_q ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
-res3 = coeftest(reg3,vcov. = NeweyWest(reg3))
-stargazer(res1,res2,res3,header = F)
+aaron3 = ivreg(ln_q ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
+aaronres3 = coeftest(aaron3,vcov. = NeweyWest(aaron3))
 ```
 
+```{r disaggregation with crops, results='asis'}
+# Aaron included rice production in ln_q, but since the future market for rice starts at 1986, rice future price is not calculated into ln_p
+# Generate calorie prod for disaggregated crops
+workdata = workdata %>% mutate(maize_prod_c = maize_prod*kappa_maize/1000000,
+                               rice_prod_c = rice_prod*kappa_rice/1000000,
+                               soybeans_prod_c = soybeans_prod*kappa_soybeans/1000000,
+                               wheat_prod_c = wheat_prod*kappa_wheat/1000000)
 
+###################################
+###################################
+# Model 1 ln_q = ln_p + rcs(year,4)
+workdata = workdata %>% mutate(ln_p = log(lag(C_fut_price)/lag(cpi)))
+maize1 = lm(log(maize_prod_c) ~ ln_p  + rcs(year,4),data = workdata)
+maizeres1 = coeftest(maize1,vcov. = NeweyWest(maize1))
+
+workdata = workdata %>% mutate(ln_p = log(lag(RR_fut_price)/lag(cpi)))
+rice1 = lm(log(rice_prod_c) ~ ln_p  + rcs(year,4),data = workdata)
+# riceres1 = coeftest(rice1,vcov. = NeweyWest(rice1)) #Newey is not working here
+riceres1 = coeftest(rice1)
+
+workdata = workdata %>% mutate(ln_p = log(lag(S_fut_price)/lag(cpi)))
+soybeans1 = lm(log(soybeans_prod_c) ~ ln_p  + rcs(year,4),data = workdata)
+soybeansres1 = coeftest(soybeans1,vcov. = NeweyWest(soybeans1))
+
+workdata = workdata %>% mutate(ln_p = log(lag(W_fut_price)/lag(cpi)))
+wheat1 = lm(log(wheat_prod_c) ~ ln_p  + rcs(year,4),data = workdata)
+wheatres1 = coeftest(wheat1,vcov. = NeweyWest(wheat1))
+
+stargazer(aaronres1,maizeres1,riceres1,soybeansres1,wheatres1,header = F,column.labels = c("aggregate","maize","rice","soybeans","wheat"))
+
+###################################
+###################################
+# Model 2 ln_q = ln_p + rcs(year,4)
+
+
+```
 
 
 
