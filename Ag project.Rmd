@@ -106,7 +106,7 @@ quant_data <- quant_data %>%
     reg <- lm(var ~ rcs(year, 3), data = data)
     y_hat <- augment(reg)$.fitted
     MSE <- mean(reg$residuals^2)
-    pred <- exp(y_hat * 0.5 * MSE)
+    pred <- exp(y_hat + (0.5 * MSE))
     year <- as.vector(augment(reg)$rcs.year..3.[, 1])
     
     results <- tibble(shock = pred, year = year)
@@ -307,23 +307,17 @@ other_data <- quant_data %>%
 # The data quant_sum, us_sum, and other_sum will now replace the quantities data.
 ```
 
+```{r merge new quantities with prices}
+all_country_workdata <- merge(quant_sum, prices, by = "year", all = T)
+us_workdata <- merge(us_sum, prices, by = "year", all = T)
+other_country_workdata <- merge(other_sum, prices, by = "year", all = T)
+```
+
+
 
 ```{r try some new regressions}
 # Generate New Dependent and Independent Variables
-ind_crop_data <- workdata %>%
-  mutate(ln_corn_area = log(maize_area),
-         ln_corn_prod = log(maize_prod),
-         ln_corn_price = log(lag(C_fut_price) / lag(cpi)),
-         ln_wheat_area = log(wheat_area),
-         ln_wheat_prod = log(wheat_prod),
-         ln_wheat_price = log(lag(W_fut_price) / lag(cpi)),
-         ln_rice_area = log(rice_area),
-         ln_rice_prod = log(rice_prod),
-         ln_rice_price = log(lag(RR_fut_price) / lag(cpi)),
-         ln_soy_area = log(soybeans_area),
-         ln_soy_prod = log(soybeans_prod),
-         ln_soy_price = log(lag(S_fut_price) / lag(cpi))
-         )
+
 
 # Run Individual Crop Regressions:
 
