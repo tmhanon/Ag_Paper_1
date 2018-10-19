@@ -13,7 +13,6 @@ library(tidyverse)
 library(stargazer)
 library(broom)
 library(ggplot2)
-library(Hmisc)
 library(rms)
 library(sandwich)
 library(lmtest)
@@ -80,6 +79,232 @@ quant_data <- area %>%
   select("year", "country", "country_str", "item_element", "value")
 quant_data <- quant_data %>%
   spread(key = item_element, value = value)
+quant_data <- quant_data %>%
+  arrange(year, country)
+
+# Merge with Hempisphere
+quant_data <- merge(quant_data, hemisphere, by = "country", all = T)
+
+# Clean up Countries
+quant_data <- quant_data %>%
+  filter(!(country %in% c(41, 96, 214)))
+
+# Generate Yield Shocks
+quant_data <- quant_data %>%
+  mutate(maize_yield = maize_prod / maize_area,
+         wheat_yield = wheat_prod / wheat_area,
+         rice_yield = rice_prod / rice_area,
+         soybeans_yield = soybeans_prod / soybeans_area,
+         ln_maize_yield = log(maize_yield),
+         ln_wheat_yield = log(wheat_yield),
+         ln_rice_yield = log(rice_yield),
+         ln_soybeans_yield = log(soybeans_yield))
+
+  # Write Function to Run Regressions to Calculate Shocks
+  yield_regs <- function(var, data) {
+    var <- data[[var]]
+    reg <- lm(var ~ rcs(year, 3), data = data)
+    y_hat <- augment(reg)$.fitted
+    MSE <- mean(reg$residuals^2)
+    pred <- exp(y_hat * 0.5 * MSE)
+    year <- as.vector(augment(reg)$rcs.year..3.[, 1])
+    
+    results <- tibble(shock = pred, year = year)
+    
+    return(results)
+  }
+
+  # Maize
+  maize_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_maize_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  maize_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_maize_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  maize_yield_shocks <- maize_good_data %>%
+    do(yield_regs("ln_maize_yield", .))
+
+  maize_new_data <- merge(maize_good_data, maize_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(maize_new_data)[names(maize_new_data) == "shock"] <- "maize_shock"
+  
+  quant_data <- bind_rows(maize_new_data, maize_bad_data)
+  
+  # Wheat
+  wheat_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_wheat_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  wheat_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_wheat_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  wheat_yield_shocks <- wheat_good_data %>%
+    do(yield_regs("ln_wheat_yield", .))
+
+  wheat_new_data <- merge(wheat_good_data, wheat_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(wheat_new_data)[names(wheat_new_data) == "shock"] <- "wheat_shock"
+  
+  quant_data <- bind_rows(wheat_new_data, wheat_bad_data)
+  
+  # Rice
+  rice_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_rice_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  rice_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_rice_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  rice_yield_shocks <- rice_good_data %>%
+    do(yield_regs("ln_rice_yield", .))
+
+  rice_new_data <- merge(rice_good_data, rice_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(rice_new_data)[names(rice_new_data) == "shock"] <- "rice_shock"
+  
+  quant_data <- bind_rows(rice_new_data, rice_bad_data)
+  
+  # Soybeans
+  soybeans_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_soybeans_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  soybeans_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_soybeans_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  soybeans_yield_shocks <- soybeans_good_data %>%
+    do(yield_regs("ln_soybeans_yield", .))
+
+  soybeans_new_data <- merge(soybeans_good_data, soybeans_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(soybeans_new_data)[names(soybeans_new_data) == "shock"] <- "soybeans_shock"
+  
+  quant_data <- bind_rows(soybeans_new_data, soybeans_bad_data)
+  
+# Generate Yield Trends
+quant_data <- quant_data %>%
+  mutate(maize_yield_trend = maize_area * maize_shock,
+         wheat_yield_trend = wheat_area * wheat_shock,
+         rice_yield_trend = rice_area * rice_shock,
+         soybeans_yield_trend = soybeans_area * soybeans_shock)
+
+# Separate out US
+us_data <- quant_data %>%
+  filter(country == 231)
+other_data <- quant_data %>%
+  filter(!(country == 231))
+
+# Summarize Across Year
+  # All Countries
+  quant_sum <- quant_data %>%
+    group_by(year) %>%
+    dplyr::summarize(maize_area = sum(maize_area, na.rm = T),
+                     wheat_area = sum(wheat_area, na.rm = T),
+                     rice_area = sum(rice_area, na.rm = T),
+                     soybeans_area = sum(soybeans_area, na.rm = T),
+                     maize_prod = sum(maize_prod, na.rm = T),
+                     wheat_prod = sum(wheat_prod, na.rm = T),
+                     rice_prod = sum(rice_prod, na.rm = T),
+                     soybeans_prod = sum(soybeans_prod, na.rm = T),
+                     maize_yield_trend_sum = sum(maize_yield_trend, na.rm = T),
+                     wheat_yield_trend_sum = sum(wheat_yield_trend, na.rm = T),
+                     rice_yield_trend_sum = sum(rice_yield_trend, na.rm = T),
+                     soybeans_yield_trend_sum = sum(soybeans_yield_trend, na.rm = T),
+                     maize_yield_trend = sum(maize_yield_trend_sum / maize_area,
+                                             na.rm = T),
+                     wheat_yield_trend = sum(wheat_yield_trend_sum / wheat_area, 
+                                             na.rm = T),
+                     rice_yield_trend = sum(rice_yield_trend_sum / rice_area, 
+                                            na.rm = T),
+                     soybeans_yield_trend = sum(soybeans_yield_trend_sum / soybeans_area, 
+                                                na.rm = T),
+                     maize_yield_shock = sum(maize_prod / maize_yield_trend_sum,
+                                             na.rm = T),
+                     wheat_yield_shock = sum(wheat_prod / wheat_yield_trend_sum, 
+                                             na.rm = T),
+                     rice_yield_shock = sum(rice_prod / rice_yield_trend_sum, 
+                                            na.rm = T),
+                     soybeans_yield_shock = sum(soybeans_prod / soybeans_yield_trend_sum, 
+                                                na.rm = T))
+  
+  # Just US
+  us_sum <- us_data %>%
+    group_by(year) %>%
+    dplyr::summarize(maize_area = sum(maize_area, na.rm = T),
+                     wheat_area = sum(wheat_area, na.rm = T),
+                     rice_area = sum(rice_area, na.rm = T),
+                     soybeans_area = sum(soybeans_area, na.rm = T),
+                     maize_prod = sum(maize_prod, na.rm = T),
+                     wheat_prod = sum(wheat_prod, na.rm = T),
+                     rice_prod = sum(rice_prod, na.rm = T),
+                     soybeans_prod = sum(soybeans_prod, na.rm = T),
+                     maize_yield_trend_sum = sum(maize_yield_trend, na.rm = T),
+                     wheat_yield_trend_sum = sum(wheat_yield_trend, na.rm = T),
+                     rice_yield_trend_sum = sum(rice_yield_trend, na.rm = T),
+                     soybeans_yield_trend_sum = sum(soybeans_yield_trend, na.rm = T),
+                     maize_yield_trend = sum(maize_yield_trend_sum / maize_area,
+                                             na.rm = T),
+                     wheat_yield_trend = sum(wheat_yield_trend_sum / wheat_area, 
+                                             na.rm = T),
+                     rice_yield_trend = sum(rice_yield_trend_sum / rice_area, 
+                                            na.rm = T),
+                     soybeans_yield_trend = sum(soybeans_yield_trend_sum / soybeans_area, 
+                                                na.rm = T),
+                     maize_yield_shock = sum(maize_prod / maize_yield_trend_sum,
+                                             na.rm = T),
+                     wheat_yield_shock = sum(wheat_prod / wheat_yield_trend_sum, 
+                                             na.rm = T),
+                     rice_yield_shock = sum(rice_prod / rice_yield_trend_sum, 
+                                            na.rm = T),
+                     soybeans_yield_shock = sum(soybeans_prod / soybeans_yield_trend_sum, 
+                                                na.rm = T))
+  
+  # All Except US
+  other_sum <- other_data %>%
+    group_by(year) %>%
+    dplyr::summarize(maize_area = sum(maize_area, na.rm = T),
+                     wheat_area = sum(wheat_area, na.rm = T),
+                     rice_area = sum(rice_area, na.rm = T),
+                     soybeans_area = sum(soybeans_area, na.rm = T),
+                     maize_prod = sum(maize_prod, na.rm = T),
+                     wheat_prod = sum(wheat_prod, na.rm = T),
+                     rice_prod = sum(rice_prod, na.rm = T),
+                     soybeans_prod = sum(soybeans_prod, na.rm = T),
+                     maize_yield_trend_sum = sum(maize_yield_trend, na.rm = T),
+                     wheat_yield_trend_sum = sum(wheat_yield_trend, na.rm = T),
+                     rice_yield_trend_sum = sum(rice_yield_trend, na.rm = T),
+                     soybeans_yield_trend_sum = sum(soybeans_yield_trend, na.rm = T),
+                     maize_yield_trend = sum(maize_yield_trend_sum / maize_area,
+                                             na.rm = T),
+                     wheat_yield_trend = sum(wheat_yield_trend_sum / wheat_area, 
+                                             na.rm = T),
+                     rice_yield_trend = sum(rice_yield_trend_sum / rice_area, 
+                                            na.rm = T),
+                     soybeans_yield_trend = sum(soybeans_yield_trend_sum / soybeans_area, 
+                                                na.rm = T),
+                     maize_yield_shock = sum(maize_prod / maize_yield_trend_sum,
+                                             na.rm = T),
+                     wheat_yield_shock = sum(wheat_prod / wheat_yield_trend_sum, 
+                                             na.rm = T),
+                     rice_yield_shock = sum(rice_prod / rice_yield_trend_sum, 
+                                            na.rm = T),
+                     soybeans_yield_shock = sum(soybeans_prod / soybeans_yield_trend_sum, 
+                                                na.rm = T))
+
+# The data quant_sum, us_sum, and other_sum will now replace the quantities data.
 ```
 
 
