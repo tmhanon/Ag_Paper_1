@@ -110,6 +110,29 @@ wheatres2 = coeftest(wheat2,vcov. = NeweyWest(wheat2))
 
 stargazer(aaronres2,maizeres2,riceres2,soybeansres2,wheatres2,header = F,column.labels = c("aggregate","maize","rice","soybeans","wheat"))
 
+###################################
+###################################
+# Model 3 ln_q = ln_p + ln_w +rcs(year,4)
+# ln_w = log(yield shock), yield_shock = prod(in calorie)/yield_trend
+
+workdata = workdata %>% mutate(ln_p = log(lag(C_fut_price)/lag(cpi)), ln_w = log(maize_prod_c/yield_trend_C))
+maize3 = ivreg(log(maize_prod_c) ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
+maizeres3 = coeftest(maize3,vcov. = NeweyWest(maize3))
+
+workdata = workdata %>% mutate(ln_p = log(lag(RR_fut_price)/lag(cpi)), ln_w = log(rice_prod_c/yield_trend_RR))
+rice3 = ivreg(log(rice_prod_c) ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
+#riceres3 = coeftest(rice3,vcov. = NeweyWest(rice3))
+riceres3 = coeftest(rice3)
+
+workdata = workdata %>% mutate(ln_p = log(lag(S_fut_price)/lag(cpi)),ln_w = log(soybeans_prod_c/yield_trend_S))
+soybeans3 = ivreg(log(soybeans_prod_c) ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
+soybeansres3 = coeftest(soybeans3,vcov. = NeweyWest(soybeans3))
+
+workdata = workdata %>% mutate(ln_p = log(lag(W_fut_price)/lag(cpi)),ln_w = log(wheat_prod_c/yield_trend_W))
+wheat3 =  ivreg(log(wheat_prod_c) ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w + rcs(year,4),data = workdata)
+wheatres3 = coeftest(wheat3,vcov. = NeweyWest(wheat3))
+
+stargazer(aaronres3,maizeres3,riceres3,soybeansres3,wheatres3,header = F,column.labels = c("aggregate","maize","rice","soybeans","wheat"))
 ```
 
 
