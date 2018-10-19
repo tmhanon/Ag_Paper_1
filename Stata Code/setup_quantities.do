@@ -157,11 +157,17 @@ gen area = (maize_area + rice_area + soybeans_area + wheat_area)/1000000
 gen prod = (kappa_maize*maize_prod + kappa_rice*rice_prod + kappa_soybeans*soybeans_prod + kappa_wheat*wheat_prod)/1000000
 gen yield_trend_sum = (kappa_maize*maize_area*yhat_maize_cntry + kappa_rice*rice_area*yhat_rice_cntry + kappa_soybeans*soybeans_area*yhat_soybeans_cntry + kappa_wheat*wheat_area*yhat_wheat_cntry)/1000000
 
+* disaggregate yield trend
+gen yield_trend_C = kappa_maize*maize_area*yhat_maize_cntry/1000000
+gen yield_trend_RR = kappa_rice*rice_area*yhat_rice_cntry/1000000
+gen yield_trend_S = kappa_soybeans*soybeans_area*yhat_soybeans_cntry/1000000
+gen yield_trend_W = kappa_wheat*wheat_area*yhat_wheat_cntry/1000000
+
 save caloric_panel, replace
 
 
 * Create global aggregates
-collapse (sum) *_area *_prod area prod yield_trend_sum, by(year)
+collapse (sum) *_area *_prod area prod yield_trend_sum yield_trend_C yield_trend_RR yield_trend_S yield_trend_W, by(year)
 gen yield_trend = yield_trend_sum/area
 gen yield_shock = prod/yield_trend_sum
 
