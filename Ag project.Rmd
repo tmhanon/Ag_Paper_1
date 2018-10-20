@@ -133,6 +133,10 @@ wheat3 =  ivreg(log(wheat_prod_c) ~ ln_p + ln_w + rcs(year,4)|lag(ln_w,1) + ln_w
 wheatres3 = coeftest(wheat3,vcov. = NeweyWest(wheat3))
 
 stargazer(aaronres3,maizeres3,riceres3,soybeansres3,wheatres3,header = F,column.labels = c("aggregate","maize","rice","soybeans","wheat"))
+
+###################################
+###################################
+
 ```
 
 
