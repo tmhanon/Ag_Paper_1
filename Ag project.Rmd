@@ -8,16 +8,20 @@ output: pdf_document
 ```{r setup, include=FALSE,message=FALSE,warning=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 library(readstata13)
+library(plyr)
 library(tidyverse)
 library(stargazer)
 library(broom)
 library(ggplot2)
-library(mfx)
+library(rms)
+library(sandwich)
+library(lmtest)
+library(AER)
 ```
 
 ```{r reading data}
 CPI    = read.table("Data/CPI.csv",sep = ",",header = T)
-area   = read.table("Data/FAOSTAT_data_2017.csv",sep = ",",header = T)
+area <- read.csv("Data/FAOSTAT_data_2017.csv")
 stock  = read.table("Data/FAOSTAT_stocks_data_2017.csv",sep = ",",header = T)
 hemisphere = read.dta13("Data/hemisphere.dta")
 quantities = read.dta13("Data/global_quantities.dta")
@@ -35,14 +39,566 @@ kappa_soybeans=2204.622*(908/966)*1590/(2000*365.25)
 kappa_wheat=2204.622*(489/798)*1615/(2000*365.25)
 
 #generate future prices
-workdata = workdata %>% mutate(fut_price = (kappa_maize*C_fut_price +kappa_soybeans*S_fut_price + kappa_wheat*W_fut_price)/(kappa_maize+kappa_soybeans+kappa_wheat)
-)
+workdata = workdata %>% 
+  mutate(fut_price = (kappa_maize*C_fut_price + kappa_soybeans*S_fut_price + kappa_wheat*W_fut_price)/(kappa_maize+kappa_soybeans+kappa_wheat))
 
 #generate variables to be used in regressions
 workdata = workdata %>% mutate(ln_q = log(prod), ln_p = log(lag(fut_price)/lag(cpi)), ln_w = log(yield_shock))
 
-##asdf
+```
 
+```{r try some regressions}
+# Replicate Aaron's Regressions:
+aaron_reg_1 <- lm(ln_q ~ ln_p + rcs(year, 4), data = workdata)
+aaron_se_1 = sqrt(diag(NeweyWest(aaron_reg_1, lag = 1)))
+
+aaron_reg_2 <- lm(ln_q ~ ln_p + ln_w + rcs(year, 4), data = workdata)
+aaron_se_2 = sqrt(diag(NeweyWest(aaron_reg_2, lag = 1)))
+
+aaron_reg_3 <- ivreg(ln_q ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), data = workdata)
+aaron_se_3 = sqrt(diag(NeweyWest(aaron_reg_3, lag = 1)))
+```
+
+```{r do quantities again}
+# Clean Up the Data
+area$Element <- revalue(area$Element, c("Area harvested" = "area",
+                                        "Production" = "prod",
+                                        "Yield" = "yield"))
+area$Item <- revalue(area$Item, c("Maize" = "maize",
+                                  "Rice, paddy" = "rice",
+                                  "Soybeans" = "soybeans",
+                                  "Wheat" = "wheat"))
+names(area)[names(area) == "Area.Code"] <- "country"
+names(area)[names(area) == "Area"] <- "country_str"
+names(area)[names(area) == "Value"] <- "value"
+names(area)[names(area) == "Year"] <- "year"
+area$item_element <- paste(area$Item, area$Element, sep = "_")
+
+# Subset to variables of interest:
+quant_data <- area %>%
+  select("year", "country", "country_str", "item_element", "value")
+quant_data <- quant_data %>%
+  spread(key = item_element, value = value)
+quant_data <- quant_data %>%
+  arrange(year, country)
+
+# Merge with Hempisphere
+quant_data <- merge(quant_data, hemisphere, by = "country", all = T)
+
+# Clean up Countries
+quant_data <- quant_data %>%
+  filter(!(country %in% c(41, 96, 214)))
+
+# Generate Yield Shocks
+quant_data <- quant_data %>%
+  mutate(maize_yield = maize_prod / maize_area,
+         wheat_yield = wheat_prod / wheat_area,
+         rice_yield = rice_prod / rice_area,
+         soybeans_yield = soybeans_prod / soybeans_area,
+         ln_maize_yield = log(maize_yield),
+         ln_wheat_yield = log(wheat_yield),
+         ln_rice_yield = log(rice_yield),
+         ln_soybeans_yield = log(soybeans_yield))
+
+  # Write Function to Run Regressions to Calculate Shocks
+  yield_regs <- function(var, data) {
+    var <- data[[var]]
+    reg <- lm(var ~ rcs(year, 3), data = data)
+    y_hat <- augment(reg)$.fitted
+    MSE <- mean(reg$residuals^2)
+    pred <- exp(y_hat + (0.5 * MSE))
+    year <- as.vector(augment(reg)$rcs.year..3.[, 1])
+    
+    results <- tibble(shock = pred, year = year)
+    
+    return(results)
+  }
+
+  # Maize
+  maize_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_maize_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  maize_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_maize_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  maize_yield_shocks <- maize_good_data %>%
+    do(yield_regs("ln_maize_yield", .))
+
+  maize_new_data <- merge(maize_good_data, maize_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(maize_new_data)[names(maize_new_data) == "shock"] <- "maize_shock"
+  
+  quant_data <- bind_rows(maize_new_data, maize_bad_data)
+  
+  # Wheat
+  wheat_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_wheat_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  wheat_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_wheat_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  wheat_yield_shocks <- wheat_good_data %>%
+    do(yield_regs("ln_wheat_yield", .))
+
+  wheat_new_data <- merge(wheat_good_data, wheat_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(wheat_new_data)[names(wheat_new_data) == "shock"] <- "wheat_shock"
+  
+  quant_data <- bind_rows(wheat_new_data, wheat_bad_data)
+  
+  # Rice
+  rice_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_rice_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  rice_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_rice_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  rice_yield_shocks <- rice_good_data %>%
+    do(yield_regs("ln_rice_yield", .))
+
+  rice_new_data <- merge(rice_good_data, rice_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(rice_new_data)[names(rice_new_data) == "shock"] <- "rice_shock"
+  
+  quant_data <- bind_rows(rice_new_data, rice_bad_data)
+  
+  # Soybeans
+  soybeans_good_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_soybeans_yield)), num_years = n()) %>%
+    filter(check == F, num_years > 9)
+  
+  soybeans_bad_data <- quant_data %>%
+    group_by(country) %>%
+    mutate(check = all(is.na(ln_soybeans_yield)), num_years = n()) %>%
+    filter(check == T | num_years < 10)
+
+  soybeans_yield_shocks <- soybeans_good_data %>%
+    do(yield_regs("ln_soybeans_yield", .))
+
+  soybeans_new_data <- merge(soybeans_good_data, soybeans_yield_shocks,
+                          by = c("country", "year"), all = T)
+  names(soybeans_new_data)[names(soybeans_new_data) == "shock"] <- "soybeans_shock"
+  
+  quant_data <- bind_rows(soybeans_new_data, soybeans_bad_data)
+  
+# Generate Yield Trends
+quant_data <- quant_data %>%
+  mutate(maize_yield_trend = (maize_area * maize_shock * kappa_maize) / 1000000,
+         wheat_yield_trend = (wheat_area * wheat_shock * kappa_wheat) / 1000000,
+         rice_yield_trend = (rice_area * rice_shock * kappa_rice) / 1000000,
+         soybeans_yield_trend = (soybeans_area * soybeans_shock * kappa_soybeans) / 1000000)
+
+# Separate out US
+us_data <- quant_data %>%
+  filter(country == 231)
+other_data <- quant_data %>%
+  filter(!(country == 231))
+
+# Summarize Across Year
+  # All Countries
+  quant_sum <- quant_data %>%
+    group_by(year) %>%
+    dplyr::summarize(maize_area = sum(maize_area, na.rm = T),
+                     wheat_area = sum(wheat_area, na.rm = T),
+                     rice_area = sum(rice_area, na.rm = T),
+                     soybeans_area = sum(soybeans_area, na.rm = T),
+                     maize_prod = sum(maize_prod, na.rm = T),
+                     wheat_prod = sum(wheat_prod, na.rm = T),
+                     rice_prod = sum(rice_prod, na.rm = T),
+                     soybeans_prod = sum(soybeans_prod, na.rm = T),
+                     maize_yield_trend_sum = sum(maize_yield_trend, na.rm = T),
+                     wheat_yield_trend_sum = sum(wheat_yield_trend, na.rm = T),
+                     rice_yield_trend_sum = sum(rice_yield_trend, na.rm = T),
+                     soybeans_yield_trend_sum = sum(soybeans_yield_trend, na.rm = T),
+                     maize_yield_trend = sum(maize_yield_trend_sum / maize_area,
+                                             na.rm = T),
+                     wheat_yield_trend = sum(wheat_yield_trend_sum / wheat_area, 
+                                             na.rm = T),
+                     rice_yield_trend = sum(rice_yield_trend_sum / rice_area, 
+                                            na.rm = T),
+                     soybeans_yield_trend = sum(soybeans_yield_trend_sum / soybeans_area, 
+                                                na.rm = T),
+                     maize_yield_shock = sum(maize_prod / maize_yield_trend_sum,
+                                             na.rm = T),
+                     wheat_yield_shock = sum(wheat_prod / wheat_yield_trend_sum, 
+                                             na.rm = T),
+                     rice_yield_shock = sum(rice_prod / rice_yield_trend_sum, 
+                                            na.rm = T),
+                     soybeans_yield_shock = sum(soybeans_prod / soybeans_yield_trend_sum, 
+                                                na.rm = T))
+  
+  # Just US
+  us_sum <- us_data %>%
+    group_by(year) %>%
+    dplyr::summarize(maize_area = sum(maize_area, na.rm = T),
+                     wheat_area = sum(wheat_area, na.rm = T),
+                     rice_area = sum(rice_area, na.rm = T),
+                     soybeans_area = sum(soybeans_area, na.rm = T),
+                     maize_prod = sum(maize_prod, na.rm = T),
+                     wheat_prod = sum(wheat_prod, na.rm = T),
+                     rice_prod = sum(rice_prod, na.rm = T),
+                     soybeans_prod = sum(soybeans_prod, na.rm = T),
+                     maize_yield_trend_sum = sum(maize_yield_trend, na.rm = T),
+                     wheat_yield_trend_sum = sum(wheat_yield_trend, na.rm = T),
+                     rice_yield_trend_sum = sum(rice_yield_trend, na.rm = T),
+                     soybeans_yield_trend_sum = sum(soybeans_yield_trend, na.rm = T),
+                     maize_yield_trend = sum(maize_yield_trend_sum / maize_area,
+                                             na.rm = T),
+                     wheat_yield_trend = sum(wheat_yield_trend_sum / wheat_area, 
+                                             na.rm = T),
+                     rice_yield_trend = sum(rice_yield_trend_sum / rice_area, 
+                                            na.rm = T),
+                     soybeans_yield_trend = sum(soybeans_yield_trend_sum / soybeans_area, 
+                                                na.rm = T),
+                     maize_yield_shock = sum(maize_prod / maize_yield_trend_sum,
+                                             na.rm = T),
+                     wheat_yield_shock = sum(wheat_prod / wheat_yield_trend_sum, 
+                                             na.rm = T),
+                     rice_yield_shock = sum(rice_prod / rice_yield_trend_sum, 
+                                            na.rm = T),
+                     soybeans_yield_shock = sum(soybeans_prod / soybeans_yield_trend_sum, 
+                                                na.rm = T))
+  
+  # All Except US
+  other_sum <- other_data %>%
+    group_by(year) %>%
+    dplyr::summarize(maize_area = sum(maize_area, na.rm = T),
+                     wheat_area = sum(wheat_area, na.rm = T),
+                     rice_area = sum(rice_area, na.rm = T),
+                     soybeans_area = sum(soybeans_area, na.rm = T),
+                     maize_prod = sum(maize_prod, na.rm = T),
+                     wheat_prod = sum(wheat_prod, na.rm = T),
+                     rice_prod = sum(rice_prod, na.rm = T),
+                     soybeans_prod = sum(soybeans_prod, na.rm = T),
+                     maize_yield_trend_sum = sum(maize_yield_trend, na.rm = T),
+                     wheat_yield_trend_sum = sum(wheat_yield_trend, na.rm = T),
+                     rice_yield_trend_sum = sum(rice_yield_trend, na.rm = T),
+                     soybeans_yield_trend_sum = sum(soybeans_yield_trend, na.rm = T),
+                     maize_yield_trend = sum(maize_yield_trend_sum / maize_area,
+                                             na.rm = T),
+                     wheat_yield_trend = sum(wheat_yield_trend_sum / wheat_area, 
+                                             na.rm = T),
+                     rice_yield_trend = sum(rice_yield_trend_sum / rice_area, 
+                                            na.rm = T),
+                     soybeans_yield_trend = sum(soybeans_yield_trend_sum / soybeans_area, 
+                                                na.rm = T),
+                     maize_yield_shock = sum(maize_prod / maize_yield_trend_sum,
+                                             na.rm = T),
+                     wheat_yield_shock = sum(wheat_prod / wheat_yield_trend_sum, 
+                                             na.rm = T),
+                     rice_yield_shock = sum(rice_prod / rice_yield_trend_sum, 
+                                            na.rm = T),
+                     soybeans_yield_shock = sum(soybeans_prod / soybeans_yield_trend_sum, 
+                                                na.rm = T))
+
+# The data quant_sum, us_sum, and other_sum will now replace the quantities data.
+```
+
+```{r merge new quantities with prices}
+all_country_workdata <- merge(quant_sum, prices, by = "year", all = T)
+us_workdata <- merge(us_sum, prices, by = "year", all = T)
+other_country_workdata <- merge(other_sum, prices, by = "year", all = T)
+```
+
+```{r generate variables for regression}
+# Generate New Dependent and Independent Variables
+all_country_workdata <- all_country_workdata %>%
+  mutate(ln_maize_prod = log(maize_prod),
+         ln_maize_price = log(lag(C_fut_price) / lag(cpi)),
+         ln_maize_shock = log(maize_yield_shock),
+         ln_wheat_prod = log(wheat_prod),
+         ln_wheat_price = log(lag(W_fut_price) / lag(cpi)),
+         ln_wheat_shock = log(wheat_yield_shock),
+         ln_rice_prod = log(rice_prod),
+         ln_rice_price = log(lag(RR_fut_price) / lag(cpi)),
+         ln_rice_shock = log(rice_yield_shock),
+         ln_soybeans_prod = log(soybeans_prod),
+         ln_soybeans_price = log(lag(S_fut_price) / lag(cpi)),
+         ln_soybeans_shock = log(soybeans_yield_shock)
+         )
+
+us_workdata <- us_workdata %>%
+  mutate(ln_maize_prod = log(maize_prod),
+         ln_maize_price = log(lag(C_fut_price) / lag(cpi)),
+         ln_maize_shock = log(maize_yield_shock),
+         ln_wheat_prod = log(wheat_prod),
+         ln_wheat_price = log(lag(W_fut_price) / lag(cpi)),
+         ln_wheat_shock = log(wheat_yield_shock),
+         ln_rice_prod = log(rice_prod),
+         ln_rice_price = log(lag(RR_fut_price) / lag(cpi)),
+         ln_rice_shock = log(rice_yield_shock),
+         ln_soybeans_prod = log(soybeans_prod),
+         ln_soybeans_price = log(lag(S_fut_price) / lag(cpi)),
+         ln_soybeans_shock = log(soybeans_yield_shock)
+         )
+
+other_country_workdata <- other_country_workdata %>%
+  mutate(ln_maize_prod = log(maize_prod),
+         ln_maize_price = log(lag(C_fut_price) / lag(cpi)),
+         ln_maize_shock = log(maize_yield_shock),
+         ln_wheat_prod = log(wheat_prod),
+         ln_wheat_price = log(lag(W_fut_price) / lag(cpi)),
+         ln_wheat_shock = log(wheat_yield_shock),
+         ln_rice_prod = log(rice_prod),
+         ln_rice_price = log(lag(RR_fut_price) / lag(cpi)),
+         ln_rice_shock = log(rice_yield_shock),
+         ln_soybeans_prod = log(soybeans_prod),
+         ln_soybeans_price = log(lag(S_fut_price) / lag(cpi)),
+         ln_soybeans_shock = log(soybeans_yield_shock)
+         )
+```
+
+```{r model 1, results = 'asis'}
+# Model 1: ln_prod = ln_price + splines
+  # Maize
+  maize_reg_1 <- all_country_workdata %>%
+    rename(ln_p = ln_maize_price) %>%
+    lm(ln_maize_prod ~ ln_p + rcs(year, 4), data = .)
+  maize_se_1 = sqrt(diag(NeweyWest(maize_reg_1, lag = 1)))
+  
+  # Wheat
+  wheat_reg_1 <- all_country_workdata %>%
+    rename(ln_p = ln_wheat_price) %>%
+    lm(ln_wheat_prod ~ ln_p + rcs(year, 4), data = .)
+  wheat_se_1 = sqrt(diag(NeweyWest(wheat_reg_1, lag = 1)))
+  
+  # Rice
+  rice_reg_1 <- all_country_workdata %>%
+    rename(ln_p = ln_rice_price) %>%
+    lm(ln_rice_prod ~ ln_p + rcs(year, 4), data = .)
+  #rice_se_1 = sqrt(diag(NeweyWest(rice_reg_1, lag = 1)))
+  
+  # Soybeans
+  soybeans_reg_1 <- all_country_workdata %>%
+    rename(ln_p = ln_soybeans_price) %>%
+    lm(ln_soybeans_prod ~ ln_p + rcs(year, 4), data = .)
+  soybeans_se_1 = sqrt(diag(NeweyWest(soybeans_reg_1, lag = 1)))
+  
+  # Output Table
+  stargazer(aaron_reg_1, maize_reg_1, rice_reg_1, soybeans_reg_1, wheat_reg_1,
+            se = list(aaron_se_1, maize_se_1, NULL, soybeans_se_1, wheat_se_1),
+            header = F,
+            dep.var.labels = c("Aggregate", "Maize", "Rice", "Soybeans", "Wheat"),
+            covariate.labels = c("Supply Elast."),
+            keep = "ln_p",
+            keep.stat = c("n"))
+```
+
+```{r model 2, results='asis'}
+# Model 2: ln_prod = ln_price + ln_yield + splines
+  # Maize
+  maize_reg_2 <- all_country_workdata %>%
+    rename(ln_p = ln_maize_price,
+           ln_w = ln_maize_shock) %>%
+    lm(ln_maize_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  maize_se_2 = sqrt(diag(NeweyWest(maize_reg_2, lag = 1)))
+  
+  # Wheat
+  wheat_reg_2 <- all_country_workdata %>%
+    rename(ln_p = ln_wheat_price,
+           ln_w = ln_wheat_shock) %>%
+    lm(ln_wheat_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  wheat_se_2 = sqrt(diag(NeweyWest(wheat_reg_2, lag = 1)))
+  
+  # Rice
+  rice_reg_2 <- all_country_workdata %>%
+    rename(ln_p = ln_rice_price,
+           ln_w = ln_rice_shock) %>%
+    lm(ln_rice_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  #rice_se_2 = sqrt(diag(NeweyWest(rice_reg_2, lag = 1)))
+  
+  # Soybeans
+  soybeans_reg_2 <- all_country_workdata %>%
+    rename(ln_p = ln_soybeans_price,
+           ln_w = ln_soybeans_shock) %>%
+    lm(ln_soybeans_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  soybeans_se_2 = sqrt(diag(NeweyWest(soybeans_reg_2, lag = 1)))
+  
+  # Output Table
+  stargazer(aaron_reg_2, maize_reg_2, rice_reg_2, soybeans_reg_2, wheat_reg_2,
+            se = list(aaron_se_2, maize_se_2, NULL, soybeans_se_2, wheat_se_2),
+            header = F,
+            dep.var.labels = c("Aggregate", "Maize", "Rice", "Soybeans", "Wheat"),
+            covariate.labels = c("Supply Elast.", "Shock"),
+            keep = c("ln_p", "ln_w"),
+            keep.stat = c("n"))
+```
+
+```{r model 3, results='asis'}
+# Model 3: IV ln_prod = ln_price + ln_yield + splines | ln_p = lag(ln_w) + ln_w + splines
+  # Maize
+  maize_reg_3 <- all_country_workdata %>%
+    rename(ln_p = ln_maize_price,
+           ln_w = ln_maize_shock) %>%
+    ivreg(ln_maize_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  maize_se_3 = sqrt(diag(NeweyWest(maize_reg_3, lag = 1)))
+  
+  # Wheat
+  wheat_reg_3 <- all_country_workdata %>%
+    rename(ln_p = ln_wheat_price,
+           ln_w = ln_wheat_shock) %>%
+    ivreg(ln_wheat_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  wheat_se_3 = sqrt(diag(NeweyWest(wheat_reg_3, lag = 1)))
+  
+  # Rice
+  rice_reg_3 <- all_country_workdata %>%
+    rename(ln_p = ln_rice_price,
+           ln_w = ln_rice_shock) %>%
+    ivreg(ln_rice_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  #rice_se_3 = sqrt(diag(NeweyWest(rice_reg_3, lag = 1)))
+  
+  # Soybeans
+  soybeans_reg_3 <- all_country_workdata %>%
+    rename(ln_p = ln_soybeans_price,
+           ln_w = ln_soybeans_shock) %>%
+    ivreg(ln_soybeans_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  soybeans_se_3 = sqrt(diag(NeweyWest(soybeans_reg_3, lag = 1)))
+  
+  # Output Table
+  stargazer(aaron_reg_3, maize_reg_3, rice_reg_3, soybeans_reg_3, wheat_reg_3,
+            se = list(aaron_se_3, maize_se_3, NULL, soybeans_se_3, wheat_se_3),
+            header = F,
+            dep.var.labels = c("Aggregate", "Maize", "Rice", "Soybeans", "Wheat"),
+            covariate.labels = c("Supply Elast.", "Shock"),
+            keep = c("ln_p", "ln_w"),
+            keep.stat = c("n"))
+```
+
+```{r model 1 us only, results='asis'}
+# Model 1: US Only
+  # Maize
+  maize_reg_us_1 <- us_workdata %>%
+    rename(ln_p = ln_maize_price) %>%
+    lm(ln_maize_prod ~ ln_p + rcs(year, 4), data = .)
+  maize_se_1 = sqrt(diag(NeweyWest(maize_reg_1, lag = 1)))
+  
+  # Wheat
+  wheat_reg_us_1 <- us_workdata %>%
+    rename(ln_p = ln_wheat_price) %>%
+    lm(ln_wheat_prod ~ ln_p + rcs(year, 4), data = .)
+  wheat_se_1 = sqrt(diag(NeweyWest(wheat_reg_1, lag = 1)))
+  
+  # Rice
+  rice_reg_us_1 <- us_workdata %>%
+    rename(ln_p = ln_rice_price) %>%
+    lm(ln_rice_prod ~ ln_p + rcs(year, 4), data = .)
+  #rice_se_1 = sqrt(diag(NeweyWest(rice_reg_1, lag = 1)))
+  
+  # Soybeans
+  soybeans_reg_us_1 <- us_workdata %>%
+    rename(ln_p = ln_soybeans_price) %>%
+    lm(ln_soybeans_prod ~ ln_p + rcs(year, 4), data = .)
+  soybeans_se_1 = sqrt(diag(NeweyWest(soybeans_reg_1, lag = 1)))
+  
+  # Output Table
+  stargazer(aaron_reg_1, maize_reg_us_1, rice_reg_us_1, soybeans_reg_us_1, wheat_reg_us_1,
+            se = list(aaron_se_1, maize_se_1, NULL, soybeans_se_1, wheat_se_1),
+            header = F,
+            dep.var.labels = c("Aggregate", "Maize", "Rice", "Soybeans", "Wheat"),
+            covariate.labels = c("Supply Elast."),
+            keep = "ln_p",
+            keep.stat = c("n"))
+```
+
+```{r model 2 us only, results='asis'}
+# Model 2: US Only
+  # Maize
+  maize_reg_us_2 <- us_workdata %>%
+    rename(ln_p = ln_maize_price,
+           ln_w = ln_maize_shock) %>%
+    lm(ln_maize_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  maize_se_2 = sqrt(diag(NeweyWest(maize_reg_2, lag = 1)))
+  
+  # Wheat
+  wheat_reg_us_2 <- us_workdata %>%
+    rename(ln_p = ln_wheat_price,
+           ln_w = ln_wheat_shock) %>%
+    lm(ln_wheat_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  wheat_se_2 = sqrt(diag(NeweyWest(wheat_reg_2, lag = 1)))
+  
+  # Rice
+  rice_reg_us_2 <- us_workdata %>%
+    rename(ln_p = ln_rice_price,
+           ln_w = ln_rice_shock) %>%
+    lm(ln_rice_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  #rice_se_2 = sqrt(diag(NeweyWest(rice_reg_2, lag = 1)))
+  
+  # Soybeans
+  soybeans_reg_us_2 <- us_workdata %>%
+    rename(ln_p = ln_soybeans_price,
+           ln_w = ln_soybeans_shock) %>%
+    lm(ln_soybeans_prod ~ ln_p + ln_w + rcs(year, 4), data = .)
+  soybeans_se_2 = sqrt(diag(NeweyWest(soybeans_reg_2, lag = 1)))
+  
+  # Output Table
+  stargazer(aaron_reg_2, maize_reg_us_2, rice_reg_us_2, soybeans_reg_us_2, wheat_reg_us_2,
+            se = list(aaron_se_2, maize_se_2, NULL, soybeans_se_2, wheat_se_2),
+            header = F,
+            dep.var.labels = c("Aggregate", "Maize", "Rice", "Soybeans", "Wheat"),
+            covariate.labels = c("Supply Elast.", "Shock"),
+            keep = c("ln_p", "ln_w"),
+            keep.stat = c("n"))
+```
+
+```{r model 3 us only, results='asis'}
+# Model 3: IV ln_prod = ln_price + ln_yield + splines | ln_p = lag(ln_w) + ln_w + splines
+  # Maize
+  maize_reg_us_3 <- us_workdata %>%
+    rename(ln_p = ln_maize_price,
+           ln_w = ln_maize_shock) %>%
+    ivreg(ln_maize_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  maize_se_3 = sqrt(diag(NeweyWest(maize_reg_3, lag = 1)))
+  
+  # Wheat
+  wheat_reg_us_3 <- us_workdata %>%
+    rename(ln_p = ln_wheat_price,
+           ln_w = ln_wheat_shock) %>%
+    ivreg(ln_wheat_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  wheat_se_3 = sqrt(diag(NeweyWest(wheat_reg_3, lag = 1)))
+  
+  # Rice
+  rice_reg_us_3 <- us_workdata %>%
+    rename(ln_p = ln_rice_price,
+           ln_w = ln_rice_shock) %>%
+    ivreg(ln_rice_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  #rice_se_3 = sqrt(diag(NeweyWest(rice_reg_3, lag = 1)))
+  
+  # Soybeans
+  soybeans_reg_us_3 <- us_workdata %>%
+    rename(ln_p = ln_soybeans_price,
+           ln_w = ln_soybeans_shock) %>%
+    ivreg(ln_soybeans_prod ~ ln_p + ln_w + rcs(year, 4) | lag(ln_w, order_by = year) + ln_w + rcs(year, 4), 
+          data = .)
+  soybeans_se_3 = sqrt(diag(NeweyWest(soybeans_reg_3, lag = 1)))
+  
+  # Output Table
+  stargazer(aaron_reg_3, maize_reg_us_3, rice_reg_us_3, soybeans_reg_us_3, wheat_reg_us_3,
+            se = list(aaron_se_3, maize_se_3, NULL, soybeans_se_3, wheat_se_3),
+            header = F,
+            dep.var.labels = c("Aggregate", "Maize", "Rice", "Soybeans", "Wheat"),
+            covariate.labels = c("Supply Elast.", "Shock"),
+            keep = c("ln_p", "ln_w"),
+            keep.stat = c("n"))
 ```
 
 
